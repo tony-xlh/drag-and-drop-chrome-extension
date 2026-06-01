@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Drag & Drop Test</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #11111b;
+    color: #cdd6f4;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  .container { text-align: center; max-width: 500px; width: 100%; }
+  h1 { font-size: 22px; margin-bottom: 8px; color: #cba6f7; }
+  .sub { font-size: 13px; color: #6c7086; margin-bottom: 24px; }
+
+  .section {
+    background: #1e1e2e;
+    border: 1px solid #313244;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .section-title { font-size: 12px; color: #6c7086; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+
+  .drop-zone {
+    border: 3px dashed #45475a;
+    border-radius: 16px;
+    padding: 40px 20px;
+    transition: border-color 0.2s, background 0.2s;
+    background: #1e1e2e;
+    margin-bottom: 16px;
+  }
+  .drop-zone.drag-over { border-color: #cba6f7; background: #2a283e; }
+  .drop-zone-icon { font-size: 40px; margin-bottom: 8px; }
+  .drop-zone-text { font-size: 14px; color: #a6adc8; }
+
+  .cards { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 16px; min-height: 40px; }
+  .drag-card {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    background: #313244; border: 2px solid #cba6f7; border-radius: 8px;
+    cursor: grab; user-select: none; font-size: 12px;
+  }
+  .drag-card:active { cursor: grabbing; }
+  .drag-card-name { font-weight: 600; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drag-card-size { font-size: 10px; color: #a6adc8; }
+
+  .log {
+    background: #1e1e2e;
+    border: 1px solid #313244;
+    border-radius: 10px;
+    padding: 14px;
+    text-align: left;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .log-title { font-size: 12px; color: #6c7086; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+  .log-entry {
+    font-size: 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid #181825;
+    font-family: 'Courier New', monospace;
+  }
+  .log-entry .time { color: #6c7086; margin-right: 6px; }
+  .log-entry .file { color: #a6e3a1; }
+  .log-entry .size { color: #f9e2af; }
+  .log-entry .type { color: #89b4fa; }
+  .log-entry .event { color: #cba6f7; }
+
+  input[type="file"] { margin-top: 8px; color: #a6adc8; font-size: 13px; }
+  input[type="file"]::file-selector-button {
+    background: #45475a; color: #cdd6f4;
+    border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Injection Test Page</h1>
+  <p class="sub">
+    Simulates a real website with a hidden file input
+  </p>
+
+  <!-- Simulates OneDrive-style drag zone -->
+  <div class="drop-zone" id="dropZone">
+    <div class="drop-zone-icon">📥</div>
+    <div class="drop-zone-text" id="dropText">Drag files here (native OS drag)</div>
+  </div>
+
+  <!-- Same-origin drag cards (ID-workaround) -->
+  <div class="cards" id="cards"></div>
+
+  <!-- Visible file input for creating drag cards -->
+  <input type="file" id="nativeInput" multiple>
+  <span style="font-size:11px;color:#6c7086;">← select → creates draggable cards (ID workaround)</span>
+
+  <!-- Hidden file input — simulates what real sites use -->
+  <!-- The extension will inject files into THIS -->
+  <div class="section" style="margin-top:16px;">
+    <div class="section-title">Hidden file input (target for extension injection)</div>
+    <input type="file" id="hiddenInput" style="display:none;">
+    <div id="hiddenStatus" style="font-size:13px;color:#a6adc8;">Waiting for file injection...</div>
+  </div>
+
+  <div class="log">
+    <div class="log-title">Event Log</div>
+    <div id="logEntries"></div>
+  </div>
+</div>
+
+<script>
+  var dropZone = document.getElementById('dropZone');
+  var dropText = document.getElementById('dropText');
+  var logEntries = document.getElementById('logEntries');
+  var nativeInput = document.getElementById('nativeInput');
+  var cardsEl = document.getElementById('cards');
+  var hiddenInput = document.getElementById('hiddenInput');
+  var hiddenStatus = document.getElementById('hiddenStatus');
+
+  var fileStore = new Map();
+  var nextId = 1;
+
+  function log(label, file) {
+    var t = new Date().toTimeString().slice(0, 8);
+    var div = document.createElement('div');
+    div.className = 'log-entry';
+    div.innerHTML =
+      '<span class="time">' + t + '</span>' +
+      '<span class="event">' + label + '</span> ' +
+      '<span class="file">' + file.name + '</span> ' +
+      '<span class="size">(' + formatSize(file.size) + ')</span> ' +
+      '<span class="type">' + (file.type || 'unknown') + '</span>';
+    logEntries.prepend(div);
+  }
+
+  // ---- Native OS drag ----
+  dropZone.addEventListener('dragenter', function(e) { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragover', function(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  dropZone.addEventListener('dragleave', function() { dropZone.classList.remove('drag-over'); });
+
+  dropZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+
+    if (e.dataTransfer.files.length > 0) {
+      for (var i = 0; i < e.dataTransfer.files.length; i++) {
+        log('DROP(native)', e.dataTransfer.files[i]);
+      }
+      dropText.textContent = 'OK: ' + e.dataTransfer.files.length + ' file(s) via native drag';
+      return;
+    }
+
+    var id = e.dataTransfer.getData('text/plain');
+    if (id && fileStore.has(id)) {
+      var file = fileStore.get(id);
+      fileStore.delete(id);
+      log('DROP(custom)', file);
+      dropText.textContent = 'OK: ' + file.name + ' via custom drag';
+      var card = document.querySelector('[data-file-id="' + id + '"]');
+      if (card) card.remove();
+      return;
+    }
+
+    dropText.textContent = 'No files';
+  });
+
+  // ---- Visible input: drag cards via ID workaround ----
+  nativeInput.addEventListener('change', function() {
+    for (var i = 0; i < nativeInput.files.length; i++) {
+      var file = nativeInput.files[i];
+      log('INPUT', file);
+      createDragCard(file);
+    }
+    nativeInput.value = '';
+  });
+
+  function createDragCard(file) {
+    var id = 'f' + (nextId++);
+    fileStore.set(id, file);
+    var card = document.createElement('div');
+    card.className = 'drag-card';
+    card.draggable = true;
+    card.setAttribute('data-file-id', id);
+    card.innerHTML =
+      '<span>📄</span>' +
+      '<span class="drag-card-name">' + file.name + '</span>' +
+      '<span class="drag-card-size">' + formatSize(file.size) + '</span>';
+    card.addEventListener('dragstart', function(e) {
+      e.dataTransfer.setData('text/plain', id);
+      e.dataTransfer.effectAllowed = 'copy';
+      card.style.opacity = '0.5';
+    });
+    card.addEventListener('dragend', function() { card.style.opacity = ''; });
+    cardsEl.appendChild(card);
+  }
+
+  // ---- Hidden input: receives file from extension injection ----
+  hiddenInput.addEventListener('change', function() {
+    if (hiddenInput.files.length > 0) {
+      var f = hiddenInput.files[0];
+      log('INJECTED', f);
+      hiddenStatus.innerHTML =
+        '<span style="color:#a6e3a1;">✓ Got injected file: ' + f.name + ' (' + formatSize(f.size) + ')</span>';
+    }
+  });
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+</script>
+</body>
+</html>
