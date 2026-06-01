@@ -32,25 +32,27 @@ function injectAndSelect() {
     const file = input.files[0];
     if (!file) { cleanup(); return; }
 
-    // Remove any existing draggable handle
     const existing = document.getElementById('__ext_drag_handle');
     if (existing) existing.remove();
 
     const isImage = file.type.startsWith('image/');
+    const reader = new FileReader();
 
-    if (isImage) {
-      // Use data URL so the drag carries self-contained image data
-      // (blob URLs are origin-scoped and can't be fetched by drop-zone code)
-      const reader = new FileReader();
-      reader.onload = function () {
-        createDraggableImage(file, /** @type {string} */ (reader.result));
-        showToast('Drag the image into any drop zone on the page.', 'success');
-      };
-      reader.readAsDataURL(file);
-    } else {
-      createDraggableCard(file);
-      showToast('Drag the file card into any drop zone on the page.', 'success');
-    }
+    reader.onload = function () {
+      const dataUrl = /** @type {string} */ (reader.result);
+
+      if (isImage) {
+        createDraggableImage(file, dataUrl, null);
+      } else {
+        // Pre-decode data URL → Blob → File so dragstart is fast
+        const blob = dataUrlToBlob(dataUrl);
+        const dragFile = new File([blob], file.name, { type: file.type, lastModified: file.lastModified });
+        createDraggableCard(file, dataUrl, dragFile);
+      }
+
+      showToast('Drag it into any drop zone on the page.', 'success');
+    };
+    reader.readAsDataURL(file);
 
     cleanup();
   });
@@ -61,8 +63,19 @@ function injectAndSelect() {
     input.remove();
   }
 
-  // ======== Draggable image (for image files) ========
-  function createDraggableImage(file, dataUrl) {
+  // ======== Data URL → Blob (sync) ========
+  function dataUrlToBlob(dataUrl) {
+    var parts = dataUrl.split(',');
+    var mime = parts[0].match(/:(.*?);/)[1];
+    var bstr = atob(parts[1]);
+    var n = bstr.length;
+    var u8arr = new Uint8Array(n);
+    while (n--) { u8arr[n] = bstr.charCodeAt(n); }
+    return new Blob([u8arr], { type: mime });
+  }
+
+  // ======== Draggable image (native <img> drag) ========
+  function createDraggableImage(file, dataUrl, _unused) {
     const wrapper = document.createElement('div');
     wrapper.id = '__ext_drag_handle';
     wrapper.style.cssText =
@@ -117,8 +130,8 @@ function injectAndSelect() {
     document.body.appendChild(wrapper);
   }
 
-  // ======== Draggable file card (for non-image files) ========
-  function createDraggableCard(file) {
+  // ======== Draggable file card (div + items.add) ========
+  function createDraggableCard(file, dataUrl, dragFile) {
     const wrapper = document.createElement('div');
     wrapper.id = '__ext_drag_handle';
     wrapper.draggable = true;
@@ -133,7 +146,7 @@ function injectAndSelect() {
       'video/': '🎥',
       'audio/': '🎵',
     };
-    let icon = '📄'; // default doc icon
+    let icon = '📄';
     for (const [key, val] of Object.entries(iconMap)) {
       if (file.type.startsWith(key)) { icon = val; break; }
     }
@@ -168,7 +181,7 @@ function injectAndSelect() {
     wrapper.appendChild(closeBtn);
 
     wrapper.addEventListener('dragstart', function (e) {
-      e.dataTransfer.items.add(file);
+      e.dataTransfer.items.add(dragFile);
       e.dataTransfer.effectAllowed = 'copy';
       wrapper.style.opacity = '0.5';
       document.addEventListener('dragover', onDocDragOver, false);
