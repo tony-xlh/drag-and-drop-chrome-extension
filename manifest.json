@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "File Drag & Drop Upload",
   "version": "1.0",
-  "description": "Select a file in the popup, then drag it into any web page's drop zone to upload.",
+  "description": "Select a file to create a draggable image or file card on the page, then drag it into any drop zone to upload.",
   "permissions": ["activeTab", "scripting"],
   "action": {
     "default_popup": "popup.html",
