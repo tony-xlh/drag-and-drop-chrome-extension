@@ -12,9 +12,17 @@ body {
 .header {
   font-size: 14px;
   font-weight: 600;
-  margin-bottom: 14px;
+  margin-bottom: 6px;
   text-align: center;
   color: #cba6f7;
+}
+
+.desc {
+  font-size: 11px;
+  color: #a6adc8;
+  text-align: center;
+  margin-bottom: 12px;
+  line-height: 1.4;
 }
 
 .main-btn {

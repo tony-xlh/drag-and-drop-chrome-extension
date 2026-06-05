@@ -9,207 +9,164 @@ document.getElementById('injectBtn').addEventListener('click', async () => {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: 'MAIN',
-      func: injectAndSelect
+      func: startPickAndDrop
     });
 
-    status.textContent = 'File dialog should open on the page...';
+    status.textContent = 'Select a file, then click on the upload area of the page.';
   } catch (err) {
     status.textContent = 'Error: ' + (err.message || 'injection failed');
   }
 });
 
 // ====== Injected into page MAIN world ======
-function injectAndSelect() {
-  if (document.getElementById('__ext_temp_input')) return;
+function startPickAndDrop() {
+  // Clean up any previous instance
+  if (window.__dragDropActive) {
+    const oldOverlay = document.getElementById('__ext_drop_overlay');
+    if (oldOverlay) oldOverlay.remove();
+    const oldInput = document.getElementById('__ext_temp_input');
+    if (oldInput) oldInput.remove();
+  }
+  window.__dragDropActive = true;
 
+  // ---- Create hidden file input ----
   const input = document.createElement('input');
   input.type = 'file';
   input.id = '__ext_temp_input';
   input.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
   document.body.appendChild(input);
 
-  input.addEventListener('change', function () {
-    const file = input.files[0];
-    if (!file) { cleanup(); return; }
+  let pendingFile = null;
 
-    const existing = document.getElementById('__ext_drag_handle');
-    if (existing) existing.remove();
-
-    const isImage = file.type.startsWith('image/');
-    const reader = new FileReader();
-
-    reader.onload = function () {
-      const dataUrl = /** @type {string} */ (reader.result);
-
-      if (isImage) {
-        createDraggableImage(file, dataUrl, null);
-      } else {
-        // Pre-decode data URL → Blob → File so dragstart is fast
-        const blob = dataUrlToBlob(dataUrl);
-        const dragFile = new File([blob], file.name, { type: file.type, lastModified: file.lastModified });
-        createDraggableCard(file, dataUrl, dragFile);
+  // When file dialog closes (user cancels), the window regains focus
+  function onWindowFocus() {
+    window.removeEventListener('focus', onWindowFocus);
+    setTimeout(function () {
+      const inp = document.getElementById('__ext_temp_input');
+      if (inp && inp.files.length === 0) {
+        inp.remove();
+        window.__dragDropActive = false;
       }
+    }, 300);
+  }
 
-      showToast('Drag it into any drop zone on the page.', 'success');
-    };
-    reader.readAsDataURL(file);
-
-    cleanup();
-  });
-
-  input.click();
-
-  function cleanup() {
+  input.addEventListener('change', function () {
+    window.removeEventListener('focus', onWindowFocus);
+    const file = input.files[0];
     input.remove();
-  }
 
-  // ======== Data URL → Blob (sync) ========
-  function dataUrlToBlob(dataUrl) {
-    var parts = dataUrl.split(',');
-    var mime = parts[0].match(/:(.*?);/)[1];
-    var bstr = atob(parts[1]);
-    var n = bstr.length;
-    var u8arr = new Uint8Array(n);
-    while (n--) { u8arr[n] = bstr.charCodeAt(n); }
-    return new Blob([u8arr], { type: mime });
-  }
-
-  // ======== Draggable image (native <img> drag) ========
-  function createDraggableImage(file, dataUrl, _unused) {
-    const wrapper = document.createElement('div');
-    wrapper.id = '__ext_drag_handle';
-    wrapper.style.cssText =
-      'position:fixed;bottom:24px;right:24px;z-index:2147483647;' +
-      'display:flex;flex-direction:column;align-items:center;';
-
-    const img = document.createElement('img');
-    img.src = dataUrl;
-    img.alt = file.name;
-    img.style.cssText =
-      'max-width:200px;max-height:200px;border-radius:10px;' +
-      'border:2px solid #cba6f7;box-shadow:0 4px 24px rgba(0,0,0,0.5);' +
-      'display:block;background:#1e1e2e;object-fit:contain;' +
-      'cursor:grab;';
-
-    const label = document.createElement('div');
-    label.style.cssText =
-      'margin-top:6px;padding:4px 10px;border-radius:6px;' +
-      'background:#1e1e2e;color:#cdd6f4;font-size:11px;' +
-      'font-family:system-ui,sans-serif;text-align:center;' +
-      'max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
-      'box-shadow:0 2px 8px rgba(0,0,0,0.3);';
-    label.textContent = file.name;
-
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '×';
-    closeBtn.style.cssText =
-      'position:absolute;top:-8px;right:-8px;width:22px;height:22px;border-radius:50%;' +
-      'border:2px solid #cba6f7;background:#1e1e2e;color:#cdd6f4;font-size:14px;' +
-      'cursor:pointer;line-height:1;padding:0;z-index:1;';
-    closeBtn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      e.preventDefault();
-      wrapper.remove();
-    });
-
-    wrapper.appendChild(img);
-    wrapper.appendChild(label);
-    wrapper.appendChild(closeBtn);
-
-    img.addEventListener('dragstart', function (e) {
-      e.dataTransfer.effectAllowed = 'copy';
-      img.style.opacity = '0.5';
-      document.addEventListener('dragover', onDocDragOver, false);
-    });
-
-    img.addEventListener('dragend', function () {
-      document.removeEventListener('dragover', onDocDragOver, false);
-      img.style.opacity = '';
-    });
-
-    document.body.appendChild(wrapper);
-  }
-
-  // ======== Draggable file card (div + items.add) ========
-  function createDraggableCard(file, dataUrl, dragFile) {
-    const wrapper = document.createElement('div');
-    wrapper.id = '__ext_drag_handle';
-    wrapper.draggable = true;
-    wrapper.style.cssText =
-      'position:fixed;bottom:24px;right:24px;z-index:2147483647;' +
-      'cursor:grab;user-select:none;';
-
-    const iconMap = {
-      'application/pdf': '📄',
-      'application/zip': '📦',
-      'text/': '📃',
-      'video/': '🎥',
-      'audio/': '🎵',
-    };
-    let icon = '📄';
-    for (const [key, val] of Object.entries(iconMap)) {
-      if (file.type.startsWith(key)) { icon = val; break; }
+    if (!file) {
+      window.__dragDropActive = false;
+      return;
     }
 
-    const card = document.createElement('div');
-    card.style.cssText =
-      'background:#1e1e2e;color:#cdd6f4;border:2px solid #cba6f7;' +
-      'border-radius:12px;padding:14px 18px;' +
-      'font-family:system-ui,sans-serif;font-size:13px;' +
-      'box-shadow:0 4px 24px rgba(0,0,0,0.5);' +
-      'display:flex;align-items:center;gap:10px;';
-    card.innerHTML =
-      '<span style="font-size:22px;">' + icon + '</span>' +
-      '<div>' +
-      '<div style="font-weight:600;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(file.name) + '</div>' +
-      '<div style="font-size:11px;color:#a6adc8;">' + formatSize(file.size) + ' — Drag me to upload</div>' +
-      '</div>';
+    pendingFile = file;
+    showDropOverlay(file);
+  });
 
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '×';
-    closeBtn.style.cssText =
-      'position:absolute;top:-8px;right:-8px;width:22px;height:22px;border-radius:50%;' +
-      'border:2px solid #cba6f7;background:#1e1e2e;color:#cdd6f4;font-size:14px;' +
-      'cursor:pointer;line-height:1;padding:0;';
-    closeBtn.addEventListener('click', function (e) {
-      e.stopPropagation();
+  window.addEventListener('focus', onWindowFocus);
+  input.click();
+
+  // ---- File selected, show click-to-drop overlay ----
+  function showDropOverlay(file) {
+    const existing = document.getElementById('__ext_drop_overlay');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = '__ext_drop_overlay';
+    overlay.style.cssText =
+      'position:fixed;top:0;left:0;width:100%;height:100%;' +
+      'z-index:2147483646;cursor:copy;' +
+      'background:rgba(203,166,247,0.06);';
+
+    const name = file.name.length > 40
+      ? file.name.slice(0, 37) + '...'
+      : file.name;
+
+    const hint = document.createElement('div');
+    hint.style.cssText =
+      'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
+      'padding:16px 32px;background:#1e1e2e;color:#cdd6f4;' +
+      'border:2px solid #cba6f7;border-radius:12px;' +
+      'font-family:system-ui,sans-serif;font-size:14px;font-weight:600;' +
+      'pointer-events:none;box-shadow:0 4px 24px rgba(0,0,0,0.5);' +
+      'z-index:2147483647;text-align:center;';
+    hint.innerHTML =
+      'Click on the upload area<br>' +
+      'to drop <span style="color:#cba6f7;">' + escapeHtml(name) + '</span><br>' +
+      '<span style="font-size:11px;color:#a6adc8;">or press Esc to cancel</span>';
+
+    overlay.appendChild(hint);
+    document.body.appendChild(overlay);
+
+    // ---- Click → find real target and simulate drop ----
+    overlay.addEventListener('click', function (e) {
       e.preventDefault();
-      wrapper.remove();
+      e.stopPropagation();
+
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+
+      overlay.style.display = 'none';
+      const target = document.elementFromPoint(clientX, clientY);
+      overlay.style.display = '';
+
+      if (target && pendingFile) {
+        simulateDrop(target, clientX, clientY, pendingFile);
+      }
+
+      overlay.remove();
+      removeKeyHandler();
+      pendingFile = null;
+      window.__dragDropActive = false;
     });
 
-    wrapper.appendChild(card);
-    wrapper.appendChild(closeBtn);
-
-    wrapper.addEventListener('dragstart', function (e) {
-      e.dataTransfer.items.add(dragFile);
-      e.dataTransfer.effectAllowed = 'copy';
-      wrapper.style.opacity = '0.5';
-      document.addEventListener('dragover', onDocDragOver, false);
-    });
-
-    wrapper.addEventListener('dragend', function () {
-      document.removeEventListener('dragover', onDocDragOver, false);
-      wrapper.style.opacity = '';
-    });
-
-    document.body.appendChild(wrapper);
+    // ---- Esc to cancel ----
+    function onKeyDown(e) {
+      if (e.key === 'Escape') {
+        overlay.remove();
+        removeKeyHandler();
+        pendingFile = null;
+        window.__dragDropActive = false;
+      }
+    }
+    function removeKeyHandler() {
+      document.removeEventListener('keydown', onKeyDown);
+    }
+    document.addEventListener('keydown', onKeyDown);
   }
 
-  function onDocDragOver(e) {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
+  // ---- Simulate drag-and-drop using native DragEvent + DataTransfer ----
+  function simulateDrop(target, x, y, file) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+
+    // Create event config shared by all three events
+    const eventConfig = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      screenX: x,
+      screenY: y,
+      dataTransfer: dt
+    };
+
+    // Dispatch the full drag sequence: dragenter → dragover → drop
+    // Many web apps need all three to properly activate and accept the drop
+    target.dispatchEvent(new DragEvent('dragenter', eventConfig));
+    target.dispatchEvent(new DragEvent('dragover', eventConfig));
+    target.dispatchEvent(new DragEvent('drop', eventConfig));
+
+    showToast('File dropped!', 'success');
   }
 
+  // ---- Helpers ----
   function escapeHtml(s) {
     const div = document.createElement('div');
     div.textContent = s;
     return div.innerHTML;
-  }
-
-  function formatSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
   function showToast(msg, type) {
@@ -217,15 +174,15 @@ function injectAndSelect() {
     if (existing) existing.remove();
 
     const bg = type === 'success' ? '#a6e3a1' : '#f9e2af';
-    const fg = '#1e1e2e';
     const toast = document.createElement('div');
     toast.id = '__ext_toast';
     toast.style.cssText =
-      'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:2147483647;' +
-      'padding:12px 20px;border-radius:10px;font-size:14px;font-weight:600;' +
-      'font-family:system-ui,sans-serif;box-shadow:0 4px 20px rgba(0,0,0,0.4);' +
-      'pointer-events:none;transition:opacity 0.4s;' +
-      'background:' + bg + ';color:' + fg + ';';
+      'position:fixed;top:20px;left:50%;transform:translateX(-50%);' +
+      'z-index:2147483647;padding:12px 20px;border-radius:10px;' +
+      'font-size:14px;font-weight:600;font-family:system-ui,sans-serif;' +
+      'box-shadow:0 4px 20px rgba(0,0,0,0.4);pointer-events:none;' +
+      'transition:opacity 0.4s;' +
+      'background:' + bg + ';color:#1e1e2e;';
     toast.textContent = msg;
     document.body.appendChild(toast);
 
