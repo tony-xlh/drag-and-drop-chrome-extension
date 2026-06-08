@@ -120,10 +120,12 @@ function startPickAndDrop() {
     let hintChanged = false;
 
     function findDropTarget(el) {
-      // Fast path: check for inline handlers and known patterns
+      // Fast path: check for inline handlers and known patterns.
+      // Use nodeType===1 instead of comparing to document.body/documentElement,
+      // so we can walk the DOM tree inside iframes too.
       let current = el;
       let depth = 0;
-      while (current && current !== document.body && current !== document.documentElement && depth < 12) {
+      while (current && current.nodeType === 1 && depth < 12) {
         if (current.ondrop || current.ondragover || current.ondragenter) return current;
         if (current.tagName === 'INPUT' && current.type === 'file') return current;
         depth++;
@@ -174,23 +176,50 @@ function startPickAndDrop() {
       return tag + id + cls + (txt ? ' "' + txt + '"' : '');
     }
 
+    // Drill into same-origin iframes to get the real element at a point.
+    // Returns { el, doc, surface } so callers can dispatch events into the right document.
+    function deepElementFromPoint(x, y) {
+      // Use elementsFromPoint + filter to see through our overlay
+      const all = document.elementsFromPoint(x, y);
+      const topEl = all.find(function (el) {
+        return el !== overlay && el !== hint && el.id !== '__ext_drop_overlay';
+      });
+      if (!topEl) return { el: null, doc: document, surface: null };
+
+      if (topEl.tagName === 'IFRAME') {
+        try {
+          var innerDoc = topEl.contentDocument || topEl.contentWindow.document;
+          if (innerDoc) {
+            var rect = topEl.getBoundingClientRect();
+            var innerEl = innerDoc.elementFromPoint(x - rect.left, y - rect.top);
+            if (innerEl) {
+              return { el: innerEl, doc: innerDoc, surface: topEl };
+            }
+          }
+        } catch (e) {
+          // cross-origin iframe — use the iframe element itself
+        }
+      }
+
+      return { el: topEl, doc: document, surface: topEl };
+    }
+
     overlay.addEventListener('mousemove', function (e) {
       const now = Date.now();
       if (now - lastCheck < 120) return;
       lastCheck = now;
 
-      // elementsFromPoint returns all elements at the point, ignoring pointer-events.
-      // Filter out the overlay and hint, then pick the first real element underneath.
-      const all = document.elementsFromPoint(e.clientX, e.clientY);
-      const target = all.find(function (el) {
-        return el !== overlay && el !== hint && el.id !== '__ext_drop_overlay';
-      });
+      var deep = deepElementFromPoint(e.clientX, e.clientY);
+      var target = deep.el;
+      var surfaceTarget = deep.surface;
 
       var debugLines = [];
       debugLines.push('mouse: (' + e.clientX + ', ' + e.clientY + ')');
-      debugLines.push('target: ' + describeEl(target));
-      if (all.length > 0) {
-        debugLines.push('top z-order: ' + all.slice(0, 5).map(describeEl).join(' > '));
+      debugLines.push('surface: ' + describeEl(surfaceTarget));
+      if (target !== surfaceTarget) {
+        debugLines.push('deep:   ' + describeEl(target) + ' [inside iframe]');
+      } else {
+        debugLines.push('target: ' + describeEl(target));
       }
 
       if (!target || target === document.documentElement || target === document.body) {
@@ -234,15 +263,9 @@ function startPickAndDrop() {
       e.preventDefault();
       e.stopPropagation();
 
-      const clientX = e.clientX;
-      const clientY = e.clientY;
-
-      overlay.style.display = 'none';
-      const target = document.elementFromPoint(clientX, clientY);
-      overlay.style.display = '';
-
-      if (target && pendingFile) {
-        simulateDrop(target, clientX, clientY, pendingFile);
+      const deep = deepElementFromPoint(e.clientX, e.clientY);
+      if (deep.el && pendingFile) {
+        simulateDrop(deep.el, e.clientX, e.clientY, pendingFile, deep.doc);
       }
 
       cleanup();
@@ -261,27 +284,37 @@ function startPickAndDrop() {
   }
 
   // ---- Simulate drag-and-drop using native DragEvent + DataTransfer ----
-  function simulateDrop(target, x, y, file) {
-    const dt = new DataTransfer();
+  function simulateDrop(target, x, y, file, doc) {
+    var win = doc ? (doc.defaultView || doc.ownerDocument.defaultView) : window;
+    var dt = new win.DataTransfer();
     dt.items.add(file);
 
-    // Create event config shared by all three events
-    const eventConfig = {
+    // Convert coordinates if target is inside an iframe
+    var cx = x, cy = y;
+    if (doc && doc !== document) {
+      var frameEl = doc.defaultView ? doc.defaultView.frameElement : null;
+      if (frameEl) {
+        var r = frameEl.getBoundingClientRect();
+        cx = x - r.left;
+        cy = y - r.top;
+      }
+    }
+
+    var eventConfig = {
       bubbles: true,
       cancelable: true,
-      view: window,
-      clientX: x,
-      clientY: y,
+      view: win,
+      clientX: cx,
+      clientY: cy,
       screenX: x,
       screenY: y,
       dataTransfer: dt
     };
 
     // Dispatch the full drag sequence: dragenter → dragover → drop
-    // Many web apps need all three to properly activate and accept the drop
-    target.dispatchEvent(new DragEvent('dragenter', eventConfig));
-    target.dispatchEvent(new DragEvent('dragover', eventConfig));
-    target.dispatchEvent(new DragEvent('drop', eventConfig));
+    target.dispatchEvent(new win.DragEvent('dragenter', eventConfig));
+    target.dispatchEvent(new win.DragEvent('dragover', eventConfig));
+    target.dispatchEvent(new win.DragEvent('drop', eventConfig));
 
     showToast('File dropped!', 'success');
   }
