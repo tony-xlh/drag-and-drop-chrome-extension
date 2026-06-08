@@ -136,6 +136,42 @@ function startPickAndDrop() {
     const originalHintHTML = hint.innerHTML;
     let hintChanged = false;
 
+    // Track current drag target so we can dispatch dragenter/dragleave
+    // when the mouse moves between different drop targets.  Unlike the
+    // old locking behaviour, we switch to any new target immediately.
+    var currentDragTarget = null;
+    var dragDT = null;
+
+    function getOrCreateDT() {
+      if (!dragDT) {
+        dragDT = new DataTransfer();
+        dragDT.effectAllowed = 'copy';
+        dragDT.dropEffect = 'copy';
+        if (pendingFile) dragDT.items.add(pendingFile);
+      }
+      return dragDT;
+    }
+
+    function switchDragTarget(newTarget, win) {
+      if (newTarget === currentDragTarget) return;
+      var dt = getOrCreateDT();
+      if (currentDragTarget) {
+        try {
+          currentDragTarget.dispatchEvent(new DragEvent('dragleave', {
+            bubbles: true, cancelable: true, dataTransfer: dt
+          }));
+        } catch (e) { /* ignore */ }
+      }
+      currentDragTarget = newTarget;
+      if (newTarget) {
+        try {
+          newTarget.dispatchEvent(new DragEvent('dragenter', {
+            bubbles: true, cancelable: true, dataTransfer: dt
+          }));
+        } catch (e) { /* ignore */ }
+      }
+    }
+
     function findBestDropTarget(el) {
       // Walk up to find the best ancestor to dispatch drop events on.
       // Prefer contenteditable, textbox roles, file inputs, canvas, and
@@ -259,6 +295,7 @@ function startPickAndDrop() {
         debugDiv.textContent = debugLines.join('\n');
         unhighlight();
         setHintDefault();
+        switchDragTarget(null);
         return;
       }
 
@@ -266,6 +303,20 @@ function startPickAndDrop() {
       if (highlightEl && looksLikeDropZone(target)) {
         debugLines.push('result: drop target: ' + describeEl(highlightEl));
         debugDiv.textContent = debugLines.join('\n');
+
+        // Switch drag target if the hovered element changed
+        var win = deep.doc ? (deep.doc.defaultView || deep.doc.ownerDocument.defaultView) : window;
+        if (highlightEl !== currentDragTarget) {
+          switchDragTarget(highlightEl, win);
+        } else if (currentDragTarget) {
+          // Keep drag session alive on the current target
+          try {
+            currentDragTarget.dispatchEvent(new DragEvent('dragover', {
+              bubbles: true, cancelable: true, dataTransfer: getOrCreateDT()
+            }));
+          } catch (e) { /* ignore */ }
+        }
+
         if (highlightEl !== highlightedEl) {
           unhighlight();
           highlightedEl = highlightEl;
@@ -279,10 +330,13 @@ function startPickAndDrop() {
         debugDiv.textContent = debugLines.join('\n');
         unhighlight();
         setHintDefault();
+        switchDragTarget(null);
       }
     });
 
     function cleanup() {
+      switchDragTarget(null);
+      dragDT = null;
       unhighlight();
       overlay.remove();
       removeKeyHandler();
@@ -312,7 +366,7 @@ function startPickAndDrop() {
       return null;
     }
 
-    // ---- Click → dispatch drag events and drop at click point ----
+    // ---- Click → dispatch drop at click point ----
     overlay.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -325,35 +379,37 @@ function startPickAndDrop() {
 
         var doc = deep.doc;
         var win = doc ? (doc.defaultView || doc.ownerDocument.defaultView) : window;
-        var file = pendingFile;
 
-        var dt = new win.DataTransfer();
-        dt.effectAllowed = 'copy';
-        dt.dropEffect = 'copy';
-        dt.items.add(file);
-
+        // Use the existing drag DataTransfer if available, otherwise create one
+        var dt = dragDT || getOrCreateDT();
         var cfg = { bubbles: true, cancelable: true, dataTransfer: dt };
 
         try {
-          // Find the best drop target at the click point
+          // If the mouse hasn't moved (currentDragTarget is still the best match),
+          // the dragenter + dragover have already been dispatched by mousemove.
+          // If it's a different element, switch to it now.
           var dropTarget = findBestDropTarget(deep.el);
+          if (dropTarget !== currentDragTarget) {
+            switchDragTarget(dropTarget, win);
+          }
 
-          // Dispatch a full drag cycle: dragenter → dragover → drop
-          dropTarget.dispatchEvent(new win.DragEvent('dragenter', cfg));
-          dropTarget.dispatchEvent(new win.DragEvent('dragover', cfg));
+          // Dispatch dragover + drop on the page's drop-zone overlay if one
+          // appeared (e.g. Gmail's aC7), otherwise on the target itself.
+          if (currentDragTarget) {
+            currentDragTarget.dispatchEvent(new win.DragEvent('dragover', cfg));
+          }
 
-          // Some pages (e.g. Gmail) render a drop zone overlay after dragenter.
-          // Search for it and dispatch drop there if found.
           var dropZone = findPageDropZone(doc);
           if (dropZone) {
             dropZone.dispatchEvent(new win.DragEvent('dragover', cfg));
             dropZone.dispatchEvent(new win.DragEvent('drop', cfg));
-          } else {
-            dropTarget.dispatchEvent(new win.DragEvent('drop', cfg));
+          } else if (currentDragTarget) {
+            currentDragTarget.dispatchEvent(new win.DragEvent('drop', cfg));
           }
 
-          // Clean up: dragleave so the page can hide its drop zone
-          dropTarget.dispatchEvent(new win.DragEvent('dragleave', cfg));
+          // Clean up drag state so the page hides its drop zone
+          switchDragTarget(null);
+          dragDT = null;
 
           showToast('File dropped!', 'success');
         } catch (err) { /* ignore */ }
