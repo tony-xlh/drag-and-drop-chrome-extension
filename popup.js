@@ -136,6 +136,24 @@ function startPickAndDrop() {
     const originalHintHTML = hint.innerHTML;
     let hintChanged = false;
 
+    // Drag state: maintain across mousemove events so the page has time
+    // to render its drop zone before the user clicks.
+    var currentDragTarget = null;
+    var currentDragDoc = null;
+    var dragDT = null;
+
+    function leaveCurrentDragTarget() {
+      if (currentDragTarget && dragDT) {
+        try {
+          currentDragTarget.dispatchEvent(new DragEvent('dragleave', {
+            bubbles: true, cancelable: true, dataTransfer: dragDT
+          }));
+        } catch (e) { /* ignore */ }
+        currentDragTarget = null;
+        currentDragDoc = null;
+      }
+    }
+
     function findBestDropTarget(el) {
       // Walk up to find the best ancestor to dispatch drop events on.
       // Prefer contenteditable, textbox roles, file inputs, canvas, and
@@ -173,7 +191,8 @@ function startPickAndDrop() {
       return false;
     }
 
-    function findDropTarget(el) {
+    function findDropTarget(el, doc) {
+      // Fast path: walk up DOM for inline handlers / known attributes
       var current = el;
       var depth = 0;
       while (current && current.nodeType === 1 && depth < 14) {
@@ -186,25 +205,40 @@ function startPickAndDrop() {
         depth++;
         current = current.parentElement;
       }
-      // Slow path: fire a full dragenter→dragover→dragleave cycle with the
-      // real file so handlers that inspect dataTransfer.files will react.
-      // The dragleave at the end resets the page's drag state so the
-      // subsequent click-to-drop works from a clean slate.
-      if (pendingFile && looksLikeDropZone(el)) {
-        try {
-          var dt = new DataTransfer();
-          dt.items.add(pendingFile);
-          var baseCfg = { bubbles: true, cancelable: true, dataTransfer: dt };
-          var enterEv = new DragEvent('dragenter', baseCfg);
-          var overEv = new DragEvent('dragover', baseCfg);
-          el.dispatchEvent(enterEv);
-          el.dispatchEvent(overEv);
-          var handled = enterEv.defaultPrevented || overEv.defaultPrevented;
-          // Reset the page's drag state
-          el.dispatchEvent(new DragEvent('dragleave', baseCfg));
-          if (handled) return el;
-        } catch (e) { /* ignore */ }
+      // Slow path: maintain real drag state across mousemove events so the
+      // page has time to render its drop zone (React/etc. render async).
+      if (!pendingFile) return null;
+      if (!looksLikeDropZone(el)) {
+        leaveCurrentDragTarget();
+        return null;
       }
+
+      try {
+        if (!dragDT) {
+          dragDT = new DataTransfer();
+          dragDT.effectAllowed = 'copy';
+          dragDT.dropEffect = 'copy';
+          dragDT.items.add(pendingFile);
+        }
+
+        var target = findBestDropTarget(el);
+
+        if (target !== currentDragTarget) {
+          leaveCurrentDragTarget();
+          target.dispatchEvent(new DragEvent('dragenter', {
+            bubbles: true, cancelable: true, dataTransfer: dragDT
+          }));
+          currentDragTarget = target;
+          currentDragDoc = doc;
+        } else if (currentDragTarget) {
+          // Still on the same target — keep drag session alive
+          currentDragTarget.dispatchEvent(new DragEvent('dragover', {
+            bubbles: true, cancelable: true, dataTransfer: dragDT
+          }));
+        }
+
+        return currentDragTarget;
+      } catch (e) { /* ignore */ }
       return null;
     }
 
@@ -297,7 +331,7 @@ function startPickAndDrop() {
         return;
       }
 
-      const dropTarget = findDropTarget(target);
+      const dropTarget = findDropTarget(target, deep.doc);
       if (dropTarget) {
         // findBestDropTarget may find a better ancestor (e.g. contenteditable)
         // than what the slow path (test dispatch) returned.
@@ -327,26 +361,57 @@ function startPickAndDrop() {
 
     function cleanup() {
       unhighlight();
+      leaveCurrentDragTarget();
+      dragDT = null;
       overlay.remove();
       removeKeyHandler();
       pendingFile = null;
       window.__dragDropActive = false;
     }
 
-    // ---- Click → find real target and simulate drop ----
+    // ---- Click → drop on the already-revealed drop zone ----
     overlay.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
 
       const deep = deepElementFromPoint(e.clientX, e.clientY);
       if (deep.el && pendingFile) {
-        // Prefer the highlighted element (already verified as drop target),
-        // fall back to walking up from the click point.
-        var dropEl = highlightedEl || findBestDropTarget(deep.el);
-        simulateDrop(dropEl, e.clientX, e.clientY, pendingFile, deep.doc);
-      }
+        // Hide overlay so it doesn't block the page's drop zone
+        overlay.style.display = 'none';
+        unhighlight();
+        removeKeyHandler();
 
-      cleanup();
+        var dropEl = highlightedEl || currentDragTarget || findBestDropTarget(deep.el);
+        var doc = currentDragDoc || deep.doc;
+
+        if (dropEl) {
+          // Ensure we have a DataTransfer (fast-path may have skipped dragenter)
+          if (!dragDT) {
+            dragDT = new DataTransfer();
+            dragDT.effectAllowed = 'copy';
+            dragDT.dropEffect = 'copy';
+            dragDT.items.add(pendingFile);
+          }
+
+          try {
+            dropEl.dispatchEvent(new DragEvent('dragover', {
+              bubbles: true, cancelable: true, dataTransfer: dragDT
+            }));
+            dropEl.dispatchEvent(new DragEvent('drop', {
+              bubbles: true, cancelable: true, dataTransfer: dragDT
+            }));
+            leaveCurrentDragTarget();
+            showToast('File dropped!', 'success');
+          } catch (err) { /* ignore */ }
+        }
+
+        dragDT = null;
+        overlay.remove();
+        pendingFile = null;
+        window.__dragDropActive = false;
+      } else {
+        cleanup();
+      }
     });
 
     // ---- Esc to cancel ----
@@ -359,44 +424,6 @@ function startPickAndDrop() {
       document.removeEventListener('keydown', onKeyDown);
     }
     document.addEventListener('keydown', onKeyDown);
-  }
-
-  // ---- Simulate drag-and-drop using native DragEvent + DataTransfer ----
-  function simulateDrop(target, x, y, file, doc) {
-    var win = doc ? (doc.defaultView || doc.ownerDocument.defaultView) : window;
-    var dt = new win.DataTransfer();
-    dt.effectAllowed = 'copy';
-    dt.dropEffect = 'copy';
-    dt.items.add(file);
-
-    // Convert coordinates if target is inside an iframe
-    var cx = x, cy = y;
-    if (doc && doc !== document) {
-      var frameEl = doc.defaultView ? doc.defaultView.frameElement : null;
-      if (frameEl) {
-        var r = frameEl.getBoundingClientRect();
-        cx = x - r.left;
-        cy = y - r.top;
-      }
-    }
-
-    var eventConfig = {
-      bubbles: true,
-      cancelable: true,
-      view: win,
-      clientX: cx,
-      clientY: cy,
-      screenX: x,
-      screenY: y,
-      dataTransfer: dt
-    };
-
-    // Dispatch the full drag sequence: dragenter → dragover → drop
-    target.dispatchEvent(new win.DragEvent('dragenter', eventConfig));
-    target.dispatchEvent(new win.DragEvent('dragover', eventConfig));
-    target.dispatchEvent(new win.DragEvent('drop', eventConfig));
-
-    showToast('File dropped!', 'success');
   }
 
   // ---- Helpers ----
