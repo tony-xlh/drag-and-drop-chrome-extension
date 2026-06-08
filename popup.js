@@ -184,15 +184,23 @@ function startPickAndDrop() {
         depth++;
         current = current.parentElement;
       }
-      // Slow path: only dispatch test dragover on elements that look like
-      // potential drop zones, to avoid false positives from document-level handlers.
+      // Slow path: fire a full dragenter→dragover→dragleave cycle with the
+      // real file so handlers that inspect dataTransfer.files will react.
+      // The dragleave at the end resets the page's drag state so the
+      // subsequent click-to-drop works from a clean slate.
       if (pendingFile && looksLikeDropZone(el)) {
         try {
           var dt = new DataTransfer();
           dt.items.add(pendingFile);
-          var ev = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt });
-          el.dispatchEvent(ev);
-          if (ev.defaultPrevented) return el;
+          var baseCfg = { bubbles: true, cancelable: true, dataTransfer: dt };
+          var enterEv = new DragEvent('dragenter', baseCfg);
+          var overEv = new DragEvent('dragover', baseCfg);
+          el.dispatchEvent(enterEv);
+          el.dispatchEvent(overEv);
+          var handled = enterEv.defaultPrevented || overEv.defaultPrevented;
+          // Reset the page's drag state
+          el.dispatchEvent(new DragEvent('dragleave', baseCfg));
+          if (handled) return el;
         } catch (e) { /* ignore */ }
       }
       return null;
