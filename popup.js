@@ -154,10 +154,27 @@ function startPickAndDrop() {
       return el;
     }
 
+    function looksLikeDropZone(el) {
+      var current = el;
+      var depth = 0;
+      while (current && current.nodeType === 1 && depth < 8) {
+        var tag = current.tagName;
+        if (tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'LABEL' || tag === 'FORM') return true;
+        if (current.getAttribute && current.getAttribute('contenteditable') === 'true') return true;
+        var cls = current.className;
+        if (cls && typeof cls === 'string') {
+          cls = cls.toLowerCase();
+          if (/(drop|upload|attach|dnd|drag|file|paste|compose|editor|input|dropzone)/.test(cls)) return true;
+        }
+        depth++;
+        current = current.parentElement;
+      }
+      return false;
+    }
+
     function findDropTarget(el) {
-      // Fast path: check for inline handlers and known patterns.
-      let current = el;
-      let depth = 0;
+      var current = el;
+      var depth = 0;
       while (current && current.nodeType === 1 && depth < 14) {
         if (current.ondrop || current.ondragover || current.ondragenter) return current;
         if (current.tagName === 'INPUT' && current.type === 'file') return current;
@@ -167,13 +184,13 @@ function startPickAndDrop() {
         depth++;
         current = current.parentElement;
       }
-      // Slow path: dispatch a test dragover with the actual file so
-      // handlers that inspect dataTransfer.files will react.
-      if (pendingFile) {
+      // Slow path: only dispatch test dragover on elements that look like
+      // potential drop zones, to avoid false positives from document-level handlers.
+      if (pendingFile && looksLikeDropZone(el)) {
         try {
-          const dt = new DataTransfer();
+          var dt = new DataTransfer();
           dt.items.add(pendingFile);
-          const ev = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt });
+          var ev = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt });
           el.dispatchEvent(ev);
           if (ev.defaultPrevented) return el;
         } catch (e) { /* ignore */ }
