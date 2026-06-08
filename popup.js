@@ -20,6 +20,23 @@ document.getElementById('injectBtn').addEventListener('click', async () => {
 
 // ====== Injected into page MAIN world ======
 function startPickAndDrop() {
+  // Trusted Types policy for pages like Gmail that enforce it
+  var setHTML;
+  if (window.trustedTypes && window.trustedTypes.createPolicy) {
+    var policy;
+    try {
+      policy = window.trustedTypes.createPolicy('__dragDropExt', {
+        createHTML: function (s) { return s; }
+      });
+    } catch (e) { /* policy may already exist */ }
+    setHTML = function (el, html) {
+      if (policy) { el.innerHTML = policy.createHTML(html); }
+      else { el.innerHTML = html; }
+    };
+  } else {
+    setHTML = function (el, html) { el.innerHTML = html; };
+  }
+
   // Clean up any previous instance
   if (window.__dragDropActive) {
     const oldOverlay = document.getElementById('__ext_drop_overlay');
@@ -91,10 +108,10 @@ function startPickAndDrop() {
       'font-family:system-ui,sans-serif;font-size:14px;font-weight:600;' +
       'pointer-events:none;box-shadow:0 4px 24px rgba(0,0,0,0.5);' +
       'z-index:2147483647;text-align:center;';
-    hint.innerHTML =
+    setHTML(hint,
       'Click on the upload area<br>' +
       'to drop <span style="color:#cba6f7;">' + escapeHtml(name) + '</span><br>' +
-      '<span style="font-size:11px;color:#a6adc8;">or press Esc to cancel</span>';
+      '<span style="font-size:11px;color:#a6adc8;">or press Esc to cancel</span>');
 
     overlay.appendChild(hint);
 
@@ -152,10 +169,10 @@ function startPickAndDrop() {
       if (!hintChanged) {
         hintChanged = true;
         hint.style.borderColor = '#a6e3a1';
-        hint.innerHTML =
+        setHTML(hint,
           '<span style="color:#a6e3a1;">Drop target detected</span><br>' +
           'Click to drop <span style="color:#cba6f7;">' + escapeHtml(name) + '</span><br>' +
-          '<span style="font-size:11px;color:#a6adc8;">or press Esc to cancel</span>';
+          '<span style="font-size:11px;color:#a6adc8;">or press Esc to cancel</span>');
       }
     }
 
@@ -163,7 +180,7 @@ function startPickAndDrop() {
       if (hintChanged) {
         hintChanged = false;
         hint.style.borderColor = '#cba6f7';
-        hint.innerHTML = originalHintHTML;
+        setHTML(hint, originalHintHTML);
       }
     }
 
