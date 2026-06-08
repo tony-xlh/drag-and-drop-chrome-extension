@@ -138,13 +138,14 @@ function startPickAndDrop() {
 
     function findBestDropTarget(el) {
       // Walk up to find the best ancestor to dispatch drop events on.
-      // Prefer contenteditable, textbox roles, file inputs, and elements
-      // with inline drop handlers over leaf text nodes.
+      // Prefer contenteditable, textbox roles, file inputs, canvas, and
+      // elements with inline drop handlers over leaf text nodes.
       let current = el;
       let depth = 0;
       while (current && current.nodeType === 1 && depth < 14) {
         if (current.ondrop || current.ondragover || current.ondragenter) return current;
         if (current.tagName === 'INPUT' && current.type === 'file') return current;
+        if (current.tagName === 'CANVAS') return current;
         if (current.getAttribute && current.getAttribute('contenteditable') === 'true') return current;
         var role = current.getAttribute && current.getAttribute('role');
         if (role === 'textbox' || role === 'combobox' || role === 'searchbox') return current;
@@ -159,7 +160,7 @@ function startPickAndDrop() {
       var depth = 0;
       while (current && current.nodeType === 1 && depth < 8) {
         var tag = current.tagName;
-        if (tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'LABEL' || tag === 'FORM') return true;
+        if (tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'LABEL' || tag === 'FORM' || tag === 'CANVAS') return true;
         if (current.getAttribute && current.getAttribute('contenteditable') === 'true') return true;
         var cls = current.className;
         if (cls && typeof cls === 'string') {
@@ -178,6 +179,7 @@ function startPickAndDrop() {
       while (current && current.nodeType === 1 && depth < 14) {
         if (current.ondrop || current.ondragover || current.ondragenter) return current;
         if (current.tagName === 'INPUT' && current.type === 'file') return current;
+        if (current.tagName === 'CANVAS') return current;
         if (current.getAttribute && current.getAttribute('contenteditable') === 'true') return current;
         var role = current.getAttribute && current.getAttribute('role');
         if (role === 'textbox' || role === 'combobox' || role === 'searchbox') return current;
