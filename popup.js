@@ -136,25 +136,48 @@ function startPickAndDrop() {
     const originalHintHTML = hint.innerHTML;
     let hintChanged = false;
 
-    function findDropTarget(el) {
-      // Fast path: check for inline handlers and known patterns.
-      // Use nodeType===1 instead of comparing to document.body/documentElement,
-      // so we can walk the DOM tree inside iframes too.
+    function findBestDropTarget(el) {
+      // Walk up to find the best ancestor to dispatch drop events on.
+      // Prefer contenteditable, textbox roles, file inputs, and elements
+      // with inline drop handlers over leaf text nodes.
       let current = el;
       let depth = 0;
-      while (current && current.nodeType === 1 && depth < 12) {
+      while (current && current.nodeType === 1 && depth < 14) {
         if (current.ondrop || current.ondragover || current.ondragenter) return current;
         if (current.tagName === 'INPUT' && current.type === 'file') return current;
+        if (current.getAttribute && current.getAttribute('contenteditable') === 'true') return current;
+        var role = current.getAttribute && current.getAttribute('role');
+        if (role === 'textbox' || role === 'combobox' || role === 'searchbox') return current;
         depth++;
         current = current.parentElement;
       }
-      // Slow path: dispatch a test dragover to detect addEventListener-based handlers
-      try {
-        const dt = new DataTransfer();
-        const ev = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt });
-        el.dispatchEvent(ev);
-        if (ev.defaultPrevented) return el;
-      } catch (e) { /* ignore */ }
+      return el;
+    }
+
+    function findDropTarget(el) {
+      // Fast path: check for inline handlers and known patterns.
+      let current = el;
+      let depth = 0;
+      while (current && current.nodeType === 1 && depth < 14) {
+        if (current.ondrop || current.ondragover || current.ondragenter) return current;
+        if (current.tagName === 'INPUT' && current.type === 'file') return current;
+        if (current.getAttribute && current.getAttribute('contenteditable') === 'true') return current;
+        var role = current.getAttribute && current.getAttribute('role');
+        if (role === 'textbox' || role === 'combobox' || role === 'searchbox') return current;
+        depth++;
+        current = current.parentElement;
+      }
+      // Slow path: dispatch a test dragover with the actual file so
+      // handlers that inspect dataTransfer.files will react.
+      if (pendingFile) {
+        try {
+          const dt = new DataTransfer();
+          dt.items.add(pendingFile);
+          const ev = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt });
+          el.dispatchEvent(ev);
+          if (ev.defaultPrevented) return el;
+        } catch (e) { /* ignore */ }
+      }
       return null;
     }
 
@@ -249,11 +272,19 @@ function startPickAndDrop() {
 
       const dropTarget = findDropTarget(target);
       if (dropTarget) {
+        // findBestDropTarget may find a better ancestor (e.g. contenteditable)
+        // than what the slow path (test dispatch) returned.
+        var highlightEl = findBestDropTarget(target);
+        if (highlightEl === target) highlightEl = dropTarget;
+
         debugLines.push('result: DROP TARGET: ' + describeEl(dropTarget));
+        if (highlightEl !== dropTarget) {
+          debugLines.push('highlight: ' + describeEl(highlightEl));
+        }
         debugDiv.textContent = debugLines.join('\n');
-        if (dropTarget !== highlightedEl) {
+        if (highlightEl !== highlightedEl) {
           unhighlight();
-          highlightedEl = dropTarget;
+          highlightedEl = highlightEl;
           originalOutline = highlightedEl.style.outline;
           highlightedEl.style.outline = '2px solid #cba6f7';
           highlightedEl.style.outlineOffset = '1px';
@@ -282,7 +313,8 @@ function startPickAndDrop() {
 
       const deep = deepElementFromPoint(e.clientX, e.clientY);
       if (deep.el && pendingFile) {
-        simulateDrop(deep.el, e.clientX, e.clientY, pendingFile, deep.doc);
+        const bestEl = findBestDropTarget(deep.el);
+        simulateDrop(bestEl, e.clientX, e.clientY, pendingFile, deep.doc);
       }
 
       cleanup();
