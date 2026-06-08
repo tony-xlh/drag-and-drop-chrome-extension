@@ -97,7 +97,137 @@ function startPickAndDrop() {
       '<span style="font-size:11px;color:#a6adc8;">or press Esc to cancel</span>';
 
     overlay.appendChild(hint);
+
+    // ---- Debug panel ----
+    const debugDiv = document.createElement('div');
+    debugDiv.style.cssText =
+      'position:fixed;bottom:8px;left:8px;' +
+      'padding:8px 12px;background:rgba(0,0,0,0.85);color:#a6e3a1;' +
+      'font-family:monospace;font-size:11px;line-height:1.6;' +
+      'border-radius:6px;pointer-events:none;' +
+      'z-index:2147483647;max-width:480px;white-space:pre-wrap;' +
+      'min-width:200px;min-height:20px;';
+    debugDiv.textContent = 'debug: waiting for mouse move...';
+    overlay.appendChild(debugDiv);
+
     document.body.appendChild(overlay);
+
+    // ---- Highlight drop targets on hover ----
+    let highlightedEl = null;
+    let originalOutline = '';
+    let lastCheck = 0;
+    const originalHintHTML = hint.innerHTML;
+    let hintChanged = false;
+
+    function findDropTarget(el) {
+      // Fast path: check for inline handlers and known patterns
+      let current = el;
+      let depth = 0;
+      while (current && current !== document.body && current !== document.documentElement && depth < 12) {
+        if (current.ondrop || current.ondragover || current.ondragenter) return current;
+        if (current.tagName === 'INPUT' && current.type === 'file') return current;
+        depth++;
+        current = current.parentElement;
+      }
+      // Slow path: dispatch a test dragover to detect addEventListener-based handlers
+      try {
+        const dt = new DataTransfer();
+        const ev = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt });
+        el.dispatchEvent(ev);
+        if (ev.defaultPrevented) return el;
+      } catch (e) { /* ignore */ }
+      return null;
+    }
+
+    function unhighlight() {
+      if (highlightedEl) {
+        highlightedEl.style.outline = originalOutline;
+        highlightedEl = null;
+      }
+    }
+
+    function setHintFound() {
+      if (!hintChanged) {
+        hintChanged = true;
+        hint.style.borderColor = '#a6e3a1';
+        hint.innerHTML =
+          '<span style="color:#a6e3a1;">Drop target detected</span><br>' +
+          'Click to drop <span style="color:#cba6f7;">' + escapeHtml(name) + '</span><br>' +
+          '<span style="font-size:11px;color:#a6adc8;">or press Esc to cancel</span>';
+      }
+    }
+
+    function setHintDefault() {
+      if (hintChanged) {
+        hintChanged = false;
+        hint.style.borderColor = '#cba6f7';
+        hint.innerHTML = originalHintHTML;
+      }
+    }
+
+    function describeEl(el) {
+      if (!el) return 'null';
+      var tag = el.tagName ? el.tagName.toLowerCase() : '?';
+      var id = el.id ? '#' + el.id : '';
+      var cls = el.className && typeof el.className === 'string' ? '.' + el.className.split(' ').filter(Boolean).slice(0, 2).join('.') : '';
+      var txt = (el.textContent || '').trim().slice(0, 30);
+      return tag + id + cls + (txt ? ' "' + txt + '"' : '');
+    }
+
+    overlay.addEventListener('mousemove', function (e) {
+      const now = Date.now();
+      if (now - lastCheck < 120) return;
+      lastCheck = now;
+
+      // elementsFromPoint returns all elements at the point, ignoring pointer-events.
+      // Filter out the overlay and hint, then pick the first real element underneath.
+      const all = document.elementsFromPoint(e.clientX, e.clientY);
+      const target = all.find(function (el) {
+        return el !== overlay && el !== hint && el.id !== '__ext_drop_overlay';
+      });
+
+      var debugLines = [];
+      debugLines.push('mouse: (' + e.clientX + ', ' + e.clientY + ')');
+      debugLines.push('target: ' + describeEl(target));
+      if (all.length > 0) {
+        debugLines.push('top z-order: ' + all.slice(0, 5).map(describeEl).join(' > '));
+      }
+
+      if (!target || target === document.documentElement || target === document.body) {
+        debugLines.push('result: skipped (doc/body)');
+        debugDiv.textContent = debugLines.join('\n');
+        unhighlight();
+        setHintDefault();
+        return;
+      }
+
+      const dropTarget = findDropTarget(target);
+      if (dropTarget) {
+        debugLines.push('result: DROP TARGET: ' + describeEl(dropTarget));
+        debugDiv.textContent = debugLines.join('\n');
+        if (dropTarget !== highlightedEl) {
+          unhighlight();
+          highlightedEl = dropTarget;
+          originalOutline = highlightedEl.style.outline;
+          highlightedEl.style.outline = '2px solid #cba6f7';
+          highlightedEl.style.outlineOffset = '1px';
+        }
+        setHintFound();
+      } else {
+        debugLines.push('result: no drop handler');
+        debugDiv.textContent = debugLines.join('\n');
+        unhighlight();
+        setHintDefault();
+      }
+    });
+
+    function cleanup() {
+      unhighlight();
+      overlay.remove();
+      removeKeyHandler();
+      pendingFile = null;
+      window.__dragDropActive = false;
+    }
 
     // ---- Click → find real target and simulate drop ----
     overlay.addEventListener('click', function (e) {
@@ -115,19 +245,13 @@ function startPickAndDrop() {
         simulateDrop(target, clientX, clientY, pendingFile);
       }
 
-      overlay.remove();
-      removeKeyHandler();
-      pendingFile = null;
-      window.__dragDropActive = false;
+      cleanup();
     });
 
     // ---- Esc to cancel ----
     function onKeyDown(e) {
       if (e.key === 'Escape') {
-        overlay.remove();
-        removeKeyHandler();
-        pendingFile = null;
-        window.__dragDropActive = false;
+        cleanup();
       }
     }
     function removeKeyHandler() {
