@@ -340,8 +340,10 @@ function startPickAndDrop() {
 
       const deep = deepElementFromPoint(e.clientX, e.clientY);
       if (deep.el && pendingFile) {
-        const bestEl = findBestDropTarget(deep.el);
-        simulateDrop(bestEl, e.clientX, e.clientY, pendingFile, deep.doc);
+        // Prefer the highlighted element (already verified as drop target),
+        // fall back to walking up from the click point.
+        var dropEl = highlightedEl || findBestDropTarget(deep.el);
+        simulateDrop(dropEl, e.clientX, e.clientY, pendingFile, deep.doc);
       }
 
       cleanup();
@@ -363,6 +365,8 @@ function startPickAndDrop() {
   function simulateDrop(target, x, y, file, doc) {
     var win = doc ? (doc.defaultView || doc.ownerDocument.defaultView) : window;
     var dt = new win.DataTransfer();
+    dt.effectAllowed = 'copy';
+    dt.dropEffect = 'copy';
     dt.items.add(file);
 
     // Convert coordinates if target is inside an iframe
