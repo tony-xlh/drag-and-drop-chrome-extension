@@ -191,6 +191,27 @@ function startPickAndDrop() {
       return false;
     }
 
+    function targetScore(el) {
+      // Rate how good a drop target is. Higher = more likely to be the real handler.
+      // Overlay divs that only match class-name heuristics get penalised so they
+      // don't steal the target from contenteditable regions or inline handlers.
+      if (el.nodeType !== 1) return -10;
+      var score = 0;
+      if (el.ondrop) score += 10;
+      if (el.ondragover) score += 8;
+      if (el.getAttribute && el.getAttribute('contenteditable') === 'true') score += 7;
+      var role = el.getAttribute && el.getAttribute('role');
+      if (role === 'textbox') score += 6;
+      if (role === 'combobox' || role === 'searchbox') score += 4;
+      if (el.tagName === 'INPUT' && el.type === 'file') score += 5;
+      if (el.tagName === 'CANVAS') score += 3;
+      // Slight penalty for elements that only match on class-name heuristics
+      // (these are often page-rendered drop-zone overlays, not real handlers)
+      var cls = (el.className && typeof el.className === 'string') ? el.className.toLowerCase() : '';
+      if (!el.ondrop && !el.ondragover && /(drop|upload|dnd|drag.*zone|overlay)/.test(cls)) score -= 3;
+      return score;
+    }
+
     function findDropTarget(el, doc) {
       // Fast path: walk up DOM for inline handlers / known attributes
       var current = el;
@@ -207,6 +228,8 @@ function startPickAndDrop() {
       }
       // Slow path: maintain real drag state across mousemove events so the
       // page has time to render its drop zone (React/etc. render async).
+      // Use target scoring to allow switching to better elements (e.g. from
+      // toolbar to contenteditable) while rejecting page-rendered overlays.
       if (!pendingFile) return null;
       if (!looksLikeDropZone(el)) {
         leaveCurrentDragTarget();
@@ -222,16 +245,24 @@ function startPickAndDrop() {
         }
 
         var target = findBestDropTarget(el);
+        var newScore = targetScore(target);
 
-        if (target !== currentDragTarget) {
+        if (!currentDragTarget) {
+          target.dispatchEvent(new DragEvent('dragenter', {
+            bubbles: true, cancelable: true, dataTransfer: dragDT
+          }));
+          currentDragTarget = target;
+          currentDragDoc = doc;
+        } else if (target !== currentDragTarget && newScore > targetScore(currentDragTarget)) {
+          // Better target found — switch
           leaveCurrentDragTarget();
           target.dispatchEvent(new DragEvent('dragenter', {
             bubbles: true, cancelable: true, dataTransfer: dragDT
           }));
           currentDragTarget = target;
           currentDragDoc = doc;
-        } else if (currentDragTarget) {
-          // Still on the same target — keep drag session alive
+        } else {
+          // Keep drag session alive on the current target
           currentDragTarget.dispatchEvent(new DragEvent('dragover', {
             bubbles: true, cancelable: true, dataTransfer: dragDT
           }));
@@ -369,42 +400,72 @@ function startPickAndDrop() {
       window.__dragDropActive = false;
     }
 
-    // ---- Click → drop on the already-revealed drop zone ----
+    // Search the DOM for a page-rendered drop-zone overlay — e.g. Gmail's aC7
+    // that contains "Drop files here" text. These are typically position:fixed
+    // or position:absolute containers that appear after dragenter.
+    function findPageDropZone(doc) {
+      var all = doc.querySelectorAll('div');
+      for (var i = 0; i < all.length; i++) {
+        var text = (all[i].textContent || '').trim();
+        if (/^(Drop files here|Drop your files here|Drop files?|拖拽文件|Drop here)$/i.test(text)) {
+          // Walk up to find the positioned container
+          var p = all[i].parentElement;
+          while (p && p !== doc.body && p !== doc.documentElement) {
+            var s = p.style;
+            if (s && s.display === 'table') return p;
+            if (s && (s.position === 'absolute' || s.position === 'fixed' || parseInt(s.zIndex) > 0)) return p;
+            p = p.parentElement;
+          }
+          return all[i];
+        }
+      }
+      return null;
+    }
+
+    // ---- Click → drop on the page's own drop-zone overlay ----
+    // Pages like Gmail render a dedicated drop zone (e.g. aC7 with "Drop files
+    // here" text) after dragenter.  That overlay typically has pointer-events:none
+    // so elementFromPoint skips right through it.  Instead we search the DOM for
+    // it by content, then dispatch dragover + drop directly on it.
     overlay.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
 
       const deep = deepElementFromPoint(e.clientX, e.clientY);
       if (deep.el && pendingFile) {
-        // Hide overlay so it doesn't block the page's drop zone
         overlay.style.display = 'none';
         unhighlight();
         removeKeyHandler();
 
-        var dropEl = highlightedEl || currentDragTarget || findBestDropTarget(deep.el);
-        var doc = currentDragDoc || deep.doc;
+        var doc = deep.doc;
+        var win = doc ? (doc.defaultView || doc.ownerDocument.defaultView) : window;
+        var file = pendingFile;
 
-        if (dropEl) {
-          // Ensure we have a DataTransfer (fast-path may have skipped dragenter)
-          if (!dragDT) {
-            dragDT = new DataTransfer();
-            dragDT.effectAllowed = 'copy';
-            dragDT.dropEffect = 'copy';
-            dragDT.items.add(pendingFile);
+        // Search the DOM for a rendered drop-zone overlay (like Gmail's aC7)
+        var dropZone = findPageDropZone(doc);
+
+        var dt = new win.DataTransfer();
+        dt.effectAllowed = 'copy';
+        dt.dropEffect = 'copy';
+        dt.items.add(file);
+
+        var cfg = { bubbles: true, cancelable: true, dataTransfer: dt };
+
+        try {
+          if (dropZone) {
+            dropZone.dispatchEvent(new win.DragEvent('dragover', cfg));
+            dropZone.dispatchEvent(new win.DragEvent('drop', cfg));
+          } else {
+            // Fallback: dispatch on the leaf element at click point
+            var el = doc.elementFromPoint(e.clientX, e.clientY);
+            el.dispatchEvent(new win.DragEvent('dragover', cfg));
+            el.dispatchEvent(new win.DragEvent('drop', cfg));
           }
+          showToast('File dropped!', 'success');
+        } catch (err) { /* ignore */ }
 
-          try {
-            dropEl.dispatchEvent(new DragEvent('dragover', {
-              bubbles: true, cancelable: true, dataTransfer: dragDT
-            }));
-            dropEl.dispatchEvent(new DragEvent('drop', {
-              bubbles: true, cancelable: true, dataTransfer: dragDT
-            }));
-            leaveCurrentDragTarget();
-            showToast('File dropped!', 'success');
-          } catch (err) { /* ignore */ }
-        }
-
+        // Clean up drag state (also removes Gmail's drop zone overlay)
+        leaveCurrentDragTarget();
         dragDT = null;
         overlay.remove();
         pendingFile = null;
